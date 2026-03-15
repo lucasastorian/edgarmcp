@@ -63,12 +63,12 @@ def register(mcp: FastMCP):
             xbrl_tags: Filter to chunks containing these XBRL concept tags (e.g. ["us-gaap:Revenue"])
             start_date: YYYY-MM-DD (default: 2 years ago)
             end_date: YYYY-MM-DD (default: today)
-            limit: Max filings to load and search (default: 5, max: 10)
+            limit: Max filings to load and search (default: 5, max: 100)
             accession_numbers: Explicit filings to search (skips company/form lookup)
-            top_k: Results to return (default: 10, max: 25)
+            top_k: Results to return (default: 10, max: 50)
         """
-        limit = min(limit, 10)
-        top_k = min(top_k, 25)
+        limit = min(limit, 100)
+        top_k = min(top_k, 50)
 
         # Resolve filings to search
         if accession_numbers:
