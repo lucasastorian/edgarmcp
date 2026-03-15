@@ -1,87 +1,20 @@
 # edgarmcp
 
-Zero-infrastructure MCP server for SEC EDGAR. 5 tools. No Postgres, no Qdrant, no Redis.
-Spin up in 3 minutes. Resolves everything in real-time against EDGAR + XBRL.
+MCP server for SEC EDGAR. 5 tools, zero infrastructure. Resolves everything in real-time against EDGAR + XBRL.
 
----
+- **`get_filings`** — Discover filings, press releases, contracts, and notes
+- **`read_document`** — Read filings, sections, exhibits, or notes as Markdown
+- **`search_filings`** — BM25 search across filings, attachments, and notes
+- **`view_financials`** — XBRL statements with Q4 inference, YTD normalization, stock splits, TTM
+- **`search_edgar`** — Full-text search across all of EDGAR (SEC EFTS)
 
-## Why
+### Key features
 
-Every serious financial workflow eventually hits EDGAR — and it's always the same bottleneck. You need the 10-K, but first you need to find the filing, then download it, then parse 200 pages of nested HTML, then locate the right section, then extract the table, then cross-reference it with last quarter. Multiply by every company in a portfolio.
-
-edgarmcp gives an LLM direct, structured access to the entire EDGAR corpus through 5 tools:
-
-- **`get_filings`** — Discover filings, press releases, contracts, and notes for any company
-- **`read_document`** — Read filings, sections, exhibits, or individual notes as clean Markdown
-- **`search_filings`** — BM25 search across a company's filings, attachments, and notes
-- **`view_financials`** — Pull income statements, balance sheets, and cash flows from XBRL with Q4 inference, YTD normalization, stock split adjustment, and TTM computation
-- **`search_edgar`** — Full-text search across the entire EDGAR corpus via SEC EFTS
-
-The result: an LLM can go from "what did Apple say about AI risk in their last three 10-Ks?" to a sourced, cross-referenced answer in a single conversation — without you writing any glue code.
-
-## What Makes This Different
-
-**Multi-period financial statements, ready to analyze.** Pull 8 quarters of income statements, balance sheets, or cash flows in a single call. Q4 is inferred from full-year minus Q1-Q3. Year-to-date figures are normalized into individual quarters. Stock splits are detected and adjusted. TTM is computed. The LLM gets a clean table it can reason over immediately — not raw XBRL facts that need post-processing.
-
-**Notes, press releases, and exhibits are individually addressable.** A 10-K isn't one document — it's a bundle. The press release has the earnings guidance. The EX-10.1 has the CEO's employment agreement. Note 2 has the revenue recognition policy that explains the numbers. edgarmcp makes every piece independently discoverable, readable, and searchable. "Show me Apple's last 5 press releases" or "read the revenue recognition note from the latest 10-K" — no manual navigation through parent filings required.
-
-**Numbers link back to the accounting.** `view_financials` surfaces the notes index from the source filings alongside the numbers. The LLM can go from a line item in the income statement to the accounting policy that explains it in one hop — read the revenue recognition note, check the lease assumptions, dig into the segment breakdown. The financial statements and the prose that explains them are connected, not siloed.
-
-**High-fidelity parsing underneath.** Powered by [sec2md](https://github.com/lucasastorian/sec2md), which converts SEC HTML into structured Markdown while preserving tables, page boundaries, section structure, iXBRL tags, and images. Every other EDGAR tool is only as good as its parser. Most use generic HTML-to-text converters that destroy the structure LLMs need to reason over financial documents.
-
-**Clickable citations.** Search results and document reads include citation tags that link directly to the source element in the original SEC filing HTML. Click a citation and the filing opens in your browser with the relevant paragraph, table, or section highlighted and scrolled into view.
-
-**Full-corpus discovery.** Search the entire EDGAR corpus for a topic ("material weakness" AND "internal controls"), get matching filings across all companies, then pipe those accession numbers into deep search within the filings themselves. Two-stage: broad discovery via SEC EFTS, then targeted analysis via BM25.
-
----
-
-## What It Looks Like
-
-### "Compare NVIDIA and AMD gross margins"
-```
-view_financials(symbol="NVDA", statement_type="income_statement", report_type="quarterly", periods=8)
-view_financials(symbol="AMD", statement_type="income_statement", report_type="quarterly", periods=8)
--> Two markdown tables, 8 quarters each. LLM computes and compares.
-```
-
-### "How has Apple's risk factor language around AI changed?"
-```
-search_filings(query="artificial intelligence", company="AAPL", forms=["10-K"], sections=["risk_factors"], limit=5)
--> BM25 across last 5 10-K risk factors sections. Compare language year over year.
-```
-
-### "Read Apple's revenue recognition note"
-```
-get_filings(company="AAPL", forms=["10-K"], include_notes=true, limit=1)
--> Filing with notes index: note_1: Accounting Policies, note_2: Revenue Recognition, ...
-
-read_document(accession_number="...", note_name="note_2")
--> Full note as clean Markdown.
-```
-
-### "Which semiconductor companies disclosed supply chain risks in 2024?"
-```
-search_edgar(query="\"supply chain risk\" AND \"semiconductor\"", forms=["10-K"], start_date="2024-01-01")
--> Discovery across all of EDGAR.
-
-search_filings(query="supply chain concentration single source", accession_numbers=[top hits])
--> Deep search within those specific filings.
-```
-
-### "What did Apple say about AI in their latest earnings?"
-```
-search_filings(query="artificial intelligence AI", company="AAPL", forms=["8-K"], attachment_types=["press_release"], limit=3)
--> BM25 results from last 3 press releases, ranked by relevance.
-```
-
-### "Show me Apple's income statement, then explain the accounting"
-```
-view_financials(symbol="AAPL", statement_type="income_statement", report_type="quarterly")
--> Numbers + notes index with accession number.
-
-read_document(accession_number="...", note_name="note_2")
--> Revenue recognition note from the source 10-K.
-```
+- **Multi-period financials** — Pull 8 quarters or 3 years in one call. Q4 inferred, YTD normalized, stock splits adjusted, TTM computed.
+- **Everything is addressable** — Sections, press releases, exhibits, and notes are individually discoverable, readable, and searchable.
+- **Clickable citations** — Results link to the exact element in the original SEC filing HTML. Click to open, highlight, and scroll to source.
+- **High-fidelity parsing** — Powered by [sec2md](https://github.com/lucasastorian/sec2md). Tables, sections, iXBRL tags, and page structure preserved.
+- **Two-stage search** — Broad discovery across all EDGAR via EFTS, then deep BM25 search within specific filings.
 
 ---
 
