@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edgarmcp"
+version = "0.1.0"
+description = "Standalone SEC EDGAR MCP server — zero infrastructure"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+authors = [
+    { name = "Lucas Astorian" },
+]
+keywords = ["sec", "edgar", "mcp", "finance", "xbrl", "filings"]
+
+[project.urls]
+Homepage = "https://github.com/lucasastorian/edgarmcp"
+Repository = "https://github.com/lucasastorian/edgarmcp"
+Issues = "https://github.com/lucasastorian/edgarmcp/issues"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = [
+    "edgartools-async>=1.0.17",
+    "sec2md>=0.1.23",
+    "mcp[cli]>=1.0",
+    "pydantic>=2.9",
+    "rank-bm25>=0.2.2",
+    "httpx>=0.27",
+    "pandas>=2.2",
+    "aiohttp>=3.9",
+]
+
+[project.scripts]
+edgarmcp = "edgarmcp.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
