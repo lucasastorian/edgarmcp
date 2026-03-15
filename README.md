@@ -90,7 +90,7 @@ read_document(accession_number="...", note_name="note_2")
 ### Install from PyPI
 
 ```bash
-pip install edgarmcp
+pip install mcp-sec-edgar
 ```
 
 Or install from source:
