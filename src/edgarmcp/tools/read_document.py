@@ -196,11 +196,11 @@ def _read_section(
     parsed: ParsedFiling, section_type: str, start_page: Optional[int], end_page: Optional[int]
 ) -> str:
     """Read a specific section."""
-    # Section extraction only works reliably for 10-K and 10-Q
+    # Section extraction requires a supported form type
     form_normalized = parsed.form.replace("/A", "")
-    if form_normalized not in ("10-K", "10-Q"):
+    if form_normalized not in ("10-K", "10-Q", "8-K", "20-F"):
         return (
-            f"Section extraction is only supported for 10-K and 10-Q filings. "
+            f"Section extraction is only supported for 10-K, 10-Q, 8-K, and 20-F filings. "
             f"This filing is a {parsed.form}. Use read_document without a section parameter "
             f"to read the full filing, or use search_filings to search its content."
         )

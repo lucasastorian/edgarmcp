@@ -292,7 +292,7 @@ def _build_chunks(
                 ))
     elif section_types:
         # Section extraction only works reliably for 10-K/10-Q — use all pages for everything else
-        if parsed.form.replace("/A", "") not in ("10-K", "10-Q"):
+        if parsed.form.replace("/A", "") not in ("10-K", "10-Q", "8-K", "20-F"):
             for c in chunk_pages(parsed.pages, chunk_size=500, chunk_overlap=100):
                 chunks.append(_chunk_to_dict(c, "main", parsed, **defaults))
         else:
@@ -327,6 +327,18 @@ def _build_chunks(
                     exhibit_number=att.exhibit_number,
                     attachment_type=att.attachment_type,
                     section=None, note_name=None,
+                ))
+
+        # Notes to financial statements
+        for note in parsed.notes:
+            note_pages = [p for p in parsed.pages if note.start_page <= p.number <= note.end_page]
+            if not note_pages:
+                continue
+            for c in chunk_pages(note_pages, chunk_size=500, chunk_overlap=100):
+                chunks.append(_chunk_to_dict(
+                    c, "note", parsed,
+                    note_name=note.name,
+                    exhibit_number=None, attachment_type=None, section=None,
                 ))
 
     return chunks

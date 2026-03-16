@@ -124,7 +124,7 @@ Unified reader — one tool for main filings, sections, press releases, exhibits
 
 First read of any filing returns a navigation header with sections, notes, and attachments — the LLM uses these to decide where to go next.
 
-Section extraction covers 10-K (18 items), 10-Q (11 items), 8-K (41 items), 20-F, SC 13D, and SC 13G.
+Section extraction covers 10-K, 10-Q, 8-K, and 20-F.
 
 ### `search_filings`
 

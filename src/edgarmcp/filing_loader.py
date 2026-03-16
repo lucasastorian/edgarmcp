@@ -159,6 +159,13 @@ def load_attachment_pages(parsed: ParsedFiling, exhibit_number: str) -> list | s
                 pages = att_parser.get_pages(include_elements=True)
                 if not pages:
                     return f"No pages parsed from exhibit {exhibit_number}"
+                # Cache annotated HTML for attachment citations
+                if citation_registry.enabled:
+                    try:
+                        cache_key = f"{parsed.accession_number}_ex_{exhibit_number}"
+                        cache_annotated_html(cache_key, att_parser.html())
+                    except Exception:
+                        pass
                 return pages
             except Exception as e:
                 return f"Failed to parse exhibit {exhibit_number}: {e}"

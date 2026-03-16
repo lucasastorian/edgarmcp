@@ -90,9 +90,13 @@ async def handle_citation(request: web.Request) -> web.Response:
     if not citation:
         return web.Response(text=f"Citation {citation_id} not found.", status=404)
 
-    # Build redirect URL to the filing HTML with element IDs as fragment
+    # Build redirect URL — route attachments to their own cached HTML
     fragment = ",".join(citation.element_ids)
-    redirect_url = f"/filing/{citation.accession_number}.html#{fragment}"
+    if citation.source_type == "attachment" and citation.exhibit_number:
+        filename = f"{citation.accession_number}_ex_{citation.exhibit_number}"
+    else:
+        filename = citation.accession_number
+    redirect_url = f"/filing/{filename}.html#{fragment}"
 
     # Client-side redirect (fragment is not sent to server in 302)
     html = f"""<!DOCTYPE html>

@@ -39,9 +39,14 @@ def format_as_markdown(
     period_cols = [col for col in df.columns if col not in meta_cols]
 
     display_df = df[["label", "level", "axis", "dimension"] + period_cols].copy()
-
     for col in period_cols:
-        display_df[col] = display_df[col].apply(_format_value)
+        display_df[col] = display_df[col].astype(object)
+
+    for idx in display_df.index:
+        concept = df.at[idx, "concept"] if "concept" in df.columns else ""
+        fmt = _detect_unit_type(concept)
+        for col in period_cols:
+            display_df.at[idx, col] = _format_value(display_df.at[idx, col], fmt)
 
     output_rows = []
     current_axis = None
@@ -86,19 +91,37 @@ def _get_axis_label(axis: str) -> str:
     return axis_map.get(axis, axis.split(":")[-1] if ":" in axis else axis)
 
 
-def _format_value(val) -> str:
-    """Format numeric values in millions/billions."""
+def _detect_unit_type(concept: str) -> str:
+    """Detect whether a concept is currency, per-share, or share count."""
+    if not concept:
+        return "currency"
+    c = concept.lower()
+    if "pershare" in c or "per_share" in c:
+        return "per_share"
+    if "shares" in c or "numberofshare" in c or "stockrepurchased" in c:
+        return "shares"
+    return "currency"
+
+
+def _format_value(val, fmt: str = "currency") -> str:
+    """Format numeric values with unit-appropriate prefix and scaling."""
     if pd.isna(val) or val == "" or val == 0:
         return "-"
     try:
         num = float(val)
-        if abs(num) >= 1_000_000_000:
-            return f"${num / 1_000_000_000:.3f}B"
-        elif abs(num) >= 1_000_000:
-            return f"${num / 1_000_000:.3f}M"
-        elif abs(num) >= 1_000:
-            return f"${num / 1_000:.3f}K"
-        else:
-            return f"${num:.3f}"
     except (ValueError, TypeError):
         return str(val)
+
+    if fmt == "per_share":
+        return f"${num:.2f}"
+
+    prefix = "$" if fmt == "currency" else ""
+
+    if abs(num) >= 1_000_000_000:
+        return f"{prefix}{num / 1_000_000_000:.3f}B"
+    elif abs(num) >= 1_000_000:
+        return f"{prefix}{num / 1_000_000:.3f}M"
+    elif abs(num) >= 1_000:
+        return f"{prefix}{num / 1_000:.3f}K"
+    else:
+        return f"{prefix}{num:.3f}"
