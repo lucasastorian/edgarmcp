@@ -1,7 +1,4 @@
-"""Markdown formatting for financial statements.
-
-Adapted from intellifin's formatter — without format_market_summary.
-"""
+"""Markdown formatting for financial statements."""
 
 import pandas as pd
 

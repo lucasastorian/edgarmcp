@@ -1,5 +1,7 @@
 """search_edgar tool — full-text search across all EDGAR filings via SEC EFTS API."""
 
+import os
+import re
 from typing import Optional
 
 import httpx
@@ -44,15 +46,9 @@ def register(mcp: FastMCP):
             end_date: YYYY-MM-DD
             limit: Max results (default: 10, max: 50)
         """
-        import os
         limit = min(limit, 50)
 
-        params = {
-            "q": query,
-            "from": 0,
-            "size": limit,
-        }
-
+        params = {"q": query, "from": 0, "size": limit}
         if entity:
             params["entity"] = entity
         if forms:
@@ -63,10 +59,7 @@ def register(mcp: FastMCP):
             params["enddt"] = end_date
 
         identity = os.environ.get("EDGAR_IDENTITY", "edgarmcp user@example.com")
-        headers = {
-            "User-Agent": identity,
-            "Accept": "application/json",
-        }
+        headers = {"User-Agent": identity, "Accept": "application/json"}
 
         try:
             async with httpx.AsyncClient() as client:
@@ -84,7 +77,6 @@ def register(mcp: FastMCP):
         if not hits:
             return f'# EDGAR Search: "{query}"\n\n0 results found.'
 
-        # Format results table
         lines = [f'# EDGAR Search: "{query}"\n']
         lines.append(f"{total_hits} total hits. Showing top {len(hits)}.\n")
         lines.append("| # | Company | Form | Date | Accession | Description |")
@@ -93,26 +85,21 @@ def register(mcp: FastMCP):
         excerpts = []
         for i, hit in enumerate(hits, 1):
             source = hit.get("_source", {})
-            company = source.get("display_names", [""])[0] if source.get("display_names") else source.get("entity_name", "")
+            display_names = source.get("display_names")
+            company = display_names[0] if display_names else source.get("entity_name", "")
             form = source.get("form_type", "")
             filed = source.get("file_date", "")
-            accession = source.get("file_num", "")
-            # Try to get accession number
             acc_raw = hit.get("_id", "")
             description = source.get("display_description", "") or source.get("file_description", form)
 
             lines.append(f"| {i} | {company} | {form} | {filed} | {acc_raw} | {description} |")
 
-            # Collect highlights/excerpts
             highlight = hit.get("highlight", {})
             snippets = highlight.get("full_submission", []) or highlight.get("content", [])
             if snippets:
-                # Clean HTML tags from highlights
-                import re
-                cleaned = re.sub(r'<[^>]+>', '', snippets[0])
+                cleaned = re.sub(r"<[^>]+>", "", snippets[0])
                 excerpts.append((i, company, form, cleaned))
 
-        # Add excerpts
         if excerpts:
             lines.append("\n**Excerpts:**\n")
             for num, company, form, text in excerpts:

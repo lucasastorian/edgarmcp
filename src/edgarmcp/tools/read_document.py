@@ -6,27 +6,23 @@ from mcp.server.fastmcp import FastMCP
 
 from ..cache import ParsedFiling, cache
 from ..citations import registry as citation_registry
-from ..filing_loader import load_filing, load_attachment_pages, get_section_pages, get_note_pages
-from ..types import SectionType
+from ..filing_loader import load_filing_cached, load_attachment_pages, get_section_pages, get_note_pages
+from ..types import EdgarError, SectionType
 
 MAX_PAGES_PER_REQUEST = 20
 
 
 def _render_page_content(page, parsed: ParsedFiling, source_type: str = "main", **cite_extra) -> str:
-    """Render page content with serial XML citation tags per element.
-
-    If citations are enabled and the page has elements, each element gets
-    a <N> tag appended. Otherwise, falls back to page.content.
-    """
-    if not citation_registry.enabled or not hasattr(page, 'elements') or not page.elements:
+    """Render page content with serial XML citation tags per element."""
+    if not citation_registry.enabled or not hasattr(page, "elements") or not page.elements:
         return page.content or ""
 
     parts = []
     for element in page.elements:
-        eid = getattr(element, 'id', None)
         content = element.content or ""
         if not content.strip():
             continue
+        eid = element.id if hasattr(element, "id") else None
         if eid:
             cid = citation_registry.add(
                 accession_number=parsed.accession_number,
@@ -46,12 +42,18 @@ def _render_page_content(page, parsed: ParsedFiling, source_type: str = "main", 
 
 
 def _filing_metadata_line(parsed: ParsedFiling) -> str:
-    """Build a metadata line: Form 10-K | Filed: 2025-10-31 | Period Ending: 2025-09-27 | Accession: ..."""
     parts = [f"Form {parsed.form}", f"Filed: {parsed.filing_date}"]
     if parsed.report_date:
         parts.append(f"Period Ending: {parsed.report_date}")
     parts.append(f"Accession: {parsed.accession_number}")
     return " | ".join(parts)
+
+
+def _company_str(parsed: ParsedFiling) -> str:
+    symbol = parsed.company_symbol
+    if symbol and symbol != parsed.company_name:
+        return f"{parsed.company_name} ({symbol})"
+    return parsed.company_name
 
 
 def register(mcp: FastMCP):
@@ -97,58 +99,53 @@ def register(mcp: FastMCP):
             start_page: First page to return (default: 1)
             end_page: Last page to return (default: start_page + 19)
         """
-        # Validate mutual exclusivity
         params_set = sum(1 for p in [section, exhibit_number, note_name] if p is not None)
         if params_set > 1:
             return "Error: section, exhibit_number, and note_name are mutually exclusive. Provide at most one."
 
-        # Pre-fetch SGML async if not already parsed
-        if not cache.get(accession_number):
-            filing_ref = cache.get_filing_ref(accession_number)
-            if filing_ref:
-                try:
-                    await filing_ref.sgml_async()
-                except Exception:
-                    pass
+        try:
+            if not cache.get(accession_number):
+                filing_ref = cache.get_filing_ref(accession_number)
+                if filing_ref:
+                    try:
+                        await filing_ref.sgml_async()
+                    except Exception:
+                        pass
 
-        # Load/parse the filing (fast — SGML already cached)
-        parsed = load_filing(accession_number)
-        if isinstance(parsed, str):
-            return parsed
+            parsed = await load_filing_cached(accession_number)
 
-        # Route to appropriate handler
-        if exhibit_number is not None:
-            return _read_attachment(parsed, exhibit_number, start_page, end_page)
-        elif section is not None:
-            return _read_section(parsed, section, start_page, end_page)
-        elif note_name is not None:
-            return _read_note(parsed, note_name, start_page, end_page)
-        else:
-            return _read_main_filing(parsed, start_page, end_page)
+            if exhibit_number is not None:
+                return _read_attachment(parsed, exhibit_number, start_page, end_page)
+            elif section is not None:
+                return _read_section(parsed, section, start_page, end_page)
+            elif note_name is not None:
+                return _read_note(parsed, note_name, start_page, end_page)
+            else:
+                return _read_main_filing(parsed, start_page, end_page)
+        except EdgarError as e:
+            return str(e)
+
+
+def _paginate(total: int, start_page: Optional[int], end_page: Optional[int]) -> tuple[int, int]:
+    start = start_page or 1
+    end = end_page or min(start + MAX_PAGES_PER_REQUEST - 1, total)
+    end = min(end, start + MAX_PAGES_PER_REQUEST - 1, total)
+    return start, end
 
 
 def _read_main_filing(
     parsed: ParsedFiling, start_page: Optional[int], end_page: Optional[int]
 ) -> str:
-    """Read the main filing with navigation header on first read."""
     pages = parsed.pages
     total = len(pages)
-
-    # Pagination
-    start = start_page or 1
-    end = end_page or min(start + MAX_PAGES_PER_REQUEST - 1, total)
-    end = min(end, start + MAX_PAGES_PER_REQUEST - 1, total)
+    start, end = _paginate(total, start_page, end_page)
 
     lines = []
 
-    # Navigation header on first read (or when starting from page 1)
     if not parsed.navigated or start == 1:
-        symbol = parsed.company_symbol
-        company_str = f"{parsed.company_name} ({symbol})" if symbol and symbol != parsed.company_name else parsed.company_name
-        lines.append(f"# {company_str}")
+        lines.append(f"# {_company_str(parsed)}")
         lines.append(f"{_filing_metadata_line(parsed)} | {total} pages\n")
 
-        # Sections table
         if parsed.sections:
             lines.append("## Sections")
             lines.append("| Section | Label | Pages |")
@@ -157,7 +154,6 @@ def _read_main_filing(
                 lines.append(f"| {s.type} | {s.label} | {s.start_page}-{s.end_page} |")
             lines.append("")
 
-        # Notes table
         if parsed.notes:
             lines.append("## Notes to Financial Statements")
             lines.append("| Note | Title | Pages |")
@@ -166,7 +162,6 @@ def _read_main_filing(
                 lines.append(f"| {n.name} | {n.title} | {n.start_page}-{n.end_page} |")
             lines.append("")
 
-        # Attachments table
         if parsed.attachments:
             lines.append("## Attachments")
             lines.append("| Exhibit | Type | Description |")
@@ -178,7 +173,6 @@ def _read_main_filing(
         lines.append("---\n")
         parsed.navigated = True
 
-    # Render pages
     selected = [p for p in pages if start <= p.number <= end]
     for page in selected:
         lines.append(f"**Page {page.number} of {total}**\n")
@@ -195,8 +189,6 @@ def _read_main_filing(
 def _read_section(
     parsed: ParsedFiling, section_type: str, start_page: Optional[int], end_page: Optional[int]
 ) -> str:
-    """Read a specific section."""
-    # Section extraction requires a supported form type
     form_normalized = parsed.form.replace("/A", "")
     if form_normalized not in ("10-K", "10-Q", "8-K", "20-F"):
         return (
@@ -205,34 +197,23 @@ def _read_section(
             f"to read the full filing, or use search_filings to search its content."
         )
 
-    result = get_section_pages(parsed, section_type)
-    if isinstance(result, str):
-        return result
-
-    pages = result
+    pages = get_section_pages(parsed, section_type)
     total = len(pages)
 
-    # Find section info for label
     label = section_type
     for s in parsed.sections:
         if s.type == section_type:
             label = s.label
             break
 
-    # Pagination (relative to section pages)
-    start = start_page or 1
-    end = end_page or min(start + MAX_PAGES_PER_REQUEST - 1, total)
-    end = min(end, start + MAX_PAGES_PER_REQUEST - 1, total)
+    start, end = _paginate(total, start_page, end_page)
 
-    symbol = parsed.company_symbol
-    company_str = f"{parsed.company_name} ({symbol})" if symbol and symbol != parsed.company_name else parsed.company_name
     lines = [
-        f"# {company_str}",
+        f"# {_company_str(parsed)}",
         f"## {label}",
         f"{_filing_metadata_line(parsed)} | {total} pages\n",
     ]
 
-    # Select pages by position within section (1-indexed)
     for i, page in enumerate(pages, 1):
         if start <= i <= end:
             lines.append(f"**Page {i} of {total}**\n")
@@ -249,15 +230,9 @@ def _read_section(
 def _read_attachment(
     parsed: ParsedFiling, exhibit_number: str, start_page: Optional[int], end_page: Optional[int]
 ) -> str:
-    """Read an attachment/exhibit."""
-    result = load_attachment_pages(parsed, exhibit_number)
-    if isinstance(result, str):
-        return result
-
-    pages = result
+    pages = load_attachment_pages(parsed, exhibit_number)
     total = len(pages)
 
-    # Find attachment info
     att_type = "exhibit"
     description = ""
     for a in parsed.attachments:
@@ -266,17 +241,12 @@ def _read_attachment(
             description = a.description
             break
 
-    # Pagination
-    start = start_page or 1
-    end = end_page or min(start + MAX_PAGES_PER_REQUEST - 1, total)
-    end = min(end, start + MAX_PAGES_PER_REQUEST - 1, total)
+    start, end = _paginate(total, start_page, end_page)
 
-    symbol = parsed.company_symbol
-    company_str = f"{parsed.company_name} ({symbol})" if symbol and symbol != parsed.company_name else parsed.company_name
     att_type_display = att_type.replace("_", " ").title()
     desc_part = f": {description}" if description else ""
     lines = [
-        f"# {company_str}",
+        f"# {_company_str(parsed)}",
         f"## {att_type_display} (EX-{exhibit_number}){desc_part}",
         f"{_filing_metadata_line(parsed)} | {total} pages\n",
     ]
@@ -297,23 +267,13 @@ def _read_attachment(
 def _read_note(
     parsed: ParsedFiling, note_name: str, start_page: Optional[int], end_page: Optional[int]
 ) -> str:
-    """Read a specific note to financial statements."""
-    result = get_note_pages(parsed, note_name)
-    if isinstance(result, str):
-        return result
-
-    pages, title = result
+    pages, title = get_note_pages(parsed, note_name)
     total = len(pages)
 
-    # Pagination
-    start = start_page or 1
-    end = end_page or min(start + MAX_PAGES_PER_REQUEST - 1, total)
-    end = min(end, start + MAX_PAGES_PER_REQUEST - 1, total)
+    start, end = _paginate(total, start_page, end_page)
 
-    symbol = parsed.company_symbol
-    company_str = f"{parsed.company_name} ({symbol})" if symbol and symbol != parsed.company_name else parsed.company_name
     lines = [
-        f"# {company_str}",
+        f"# {_company_str(parsed)}",
         f"## Note: {title}",
         f"{_filing_metadata_line(parsed)} | {total} pages\n",
     ]

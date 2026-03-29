@@ -15,6 +15,8 @@ MCP server for SEC EDGAR. 5 tools, zero infrastructure. Resolves everything in r
 - **Clickable citations** — Results link to the exact element in the original SEC filing HTML. Click to open, highlight, and scroll to source.
 - **High-fidelity parsing** — Powered by [sec2md](https://github.com/lucasastorian/sec2md). Tables, sections, iXBRL tags, and page structure preserved.
 - **Two-stage search** — Broad discovery across all EDGAR via EFTS, then deep BM25 search within specific filings.
+- **Persistent cache** — Parsed filings, company metadata, and XBRL statements cached to disk (or S3) so repeat queries are instant, even across restarts.
+- **Remote deployment** — One-click deploy to Railway with API key auth, health checks, and remote citations.
 
 ---
 
@@ -79,8 +81,9 @@ Restart Claude Desktop. `edgarmcp` should appear as an MCP server.
 
 ```bash
 edgarmcp                            # stdio (default)
-edgarmcp --http --port 8000         # streamable HTTP
-edgarmcp --no-citations             # disable citation server
+edgarmcp --http --port 8000         # streamable HTTP (localhost)
+edgarmcp --http --host 0.0.0.0     # public HTTP (auto-generates API key)
+edgarmcp --no-citations             # disable citation tags
 ```
 
 ### EDGAR Identity
@@ -89,6 +92,66 @@ The SEC requires a User-Agent header identifying who is making requests. Set the
 
 ```bash
 export EDGAR_IDENTITY="Your Name your@email.com"
+```
+
+---
+
+## Remote Deployment (Railway)
+
+Deploy edgarmcp as a remote MCP server on [Railway](https://railway.com) with one click.
+
+### Setup
+
+1. Fork/clone the repo and connect it to Railway
+2. Set environment variables in Railway:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `EDGAR_IDENTITY` | yes | `"Your Name your@email.com"` |
+| `EDGARMCP_API_KEY` | no | Bearer token for auth (auto-generated if not set) |
+| `EDGARMCP_BASE_URL` | no | Your deployment URL for citation links (e.g. `https://edgarmcp-production.up.railway.app`) |
+
+3. Railway builds from the included `Dockerfile` and deploys with `/health` healthcheck
+
+### Auth
+
+When binding to `0.0.0.0` (all remote deployments), an API key is **always required**:
+- Set `EDGARMCP_API_KEY` explicitly, or
+- One is auto-generated on startup and printed to logs
+
+Clients authenticate with `Authorization: Bearer <key>`. The `/health`, `/cite/`, and `/filing/` endpoints are public (SEC filings are public data).
+
+### Persistent Cache
+
+Parsed filings, company metadata, and XBRL statements are cached persistently so expensive SEC fetches and parses happen once:
+
+| Layer | Key | What |
+|-------|-----|------|
+| Companies | `companies/{id}.json.gz` | Ticker/CIK/name mapping |
+| Parsed filings | `parsed/{accession}.json.gz` | Full sec2md parse (pages, sections, notes, attachments) |
+| XBRL statements | `xbrl/{accession}/{statement}.json.gz` | Extracted financial data per filing |
+
+**Local:** stored at `~/.edgarmcp/cache/` (default, zero-config).
+
+**S3-compatible (Railway Storage Buckets):** set these env vars to use S3 instead of filesystem:
+
+| Variable | Description |
+|----------|-------------|
+| `BUCKET` | Bucket name |
+| `ACCESS_KEY_ID` | S3 access key |
+| `SECRET_ACCESS_KEY` | S3 secret key |
+| `ENDPOINT` | S3 endpoint URL |
+| `REGION` | AWS region (default: `us-east-1`) |
+
+### Citations
+
+Citations work remotely — filing HTML is served through the main HTTP port at `/cite/` and `/filing/`. Set `EDGARMCP_BASE_URL` to your deployment URL so citation links resolve correctly for remote clients.
+
+### Connecting a Remote MCP Client
+
+```bash
+claude mcp add edgarmcp-remote --transport http https://edgarmcp-production.up.railway.app/mcp \
+  --header "Authorization: Bearer YOUR_API_KEY"
 ```
 
 ---
@@ -177,7 +240,7 @@ The discovery tool. Search all of EDGAR without knowing which companies to look 
 
 **5 tools, maximum coverage.** Company lookup, filing listing, attachment listing, and notes listing are consolidated into `get_filings`. Filing, attachment, and note reading are unified in `read_document`. Minimum surface area for the LLM.
 
-**No database.** Everything resolved in real-time against EDGAR. Slower per-query but zero setup. Parsed filings cached in an LRU (~20 most recent) so repeat reads are instant.
+**Two-level cache.** L1 is an in-memory LRU (~20 filings) for instant re-reads within a session. L2 is persistent (filesystem or S3) so parsed filings survive restarts and can be shared across instances. SEC filings are immutable — no TTL needed.
 
 **BM25 over embeddings.** Pure Python, no GPU or API needed. Good enough for keyword-heavy SEC filings. SEC EFTS covers cross-corpus discovery.
 
@@ -186,11 +249,11 @@ The discovery tool. Search all of EDGAR without knowing which companies to look 
 ## Limitations
 
 - **No embedding search** — BM25 only. Mitigated by SEC EFTS for cross-corpus discovery.
-- **Cold start per filing** — First read requires download + parse (~2-5s). Subsequent reads cached.
+- **Cold start per filing** — First read requires download + parse (~2-5s). Subsequent reads cached (persistent across restarts).
 - **SEC rate limits** — 10 requests/second. Parallel loading respects this via edgartools-async.
 - **XBRL availability** — `view_financials` requires XBRL (10-K/10-Q/20-F, generally available since ~2009).
 - **No market data** — No price or market cap context.
-- **Memory** — Each cached filing ~1-5MB. 20 filings = 20-100MB.
+- **Memory** — Each cached filing ~1-5MB. 20 filings in L1 = 20-100MB.
 - **`view_financials` latency** — Loading XBRL for 4-8 filings takes ~5-15s on first call.
 
 ## Dependencies

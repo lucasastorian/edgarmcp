@@ -1,7 +1,4 @@
-"""Financial statement merger — Q4 inference, YTD normalization, stock splits, TTM.
-
-Adapted from intellifin's FinancialStatementMerger.
-"""
+"""Financial statement merger — Q4 inference, YTD normalization, stock splits, TTM."""
 
 import re
 import logging

@@ -27,11 +27,16 @@ class CitationRegistry:
 
     One instance per MCP server process. Counter monotonically increases
     across all tool calls in the session.
+
+    Supports two URL modes:
+    - Stdio mode: separate citation server at http://localhost:{port}/{session}/{cid}
+    - HTTP mode: citations served through main ASGI app at {base_url_override}/cite/{session}/{cid}
     """
 
     def __init__(self, enabled: bool = True, port: int = 19823):
         self.enabled = enabled
         self.port = port
+        self.base_url_override: Optional[str] = None  # Set in HTTP mode
         self.session_id = secrets.token_hex(3)  # 6-char hex
         self._counter = 0
         self._citations: dict[int, Citation] = {}
@@ -63,6 +68,8 @@ class CitationRegistry:
 
     @property
     def base_url(self) -> str:
+        if self.base_url_override:
+            return f"{self.base_url_override}/cite/{self.session_id}"
         return f"http://localhost:{self.port}/{self.session_id}"
 
     def citation_url(self, citation_id: int) -> str:

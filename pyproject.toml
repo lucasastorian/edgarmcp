@@ -43,6 +43,7 @@ edgarmcp = "edgarmcp.__main__:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+railway = ["boto3>=1.35"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

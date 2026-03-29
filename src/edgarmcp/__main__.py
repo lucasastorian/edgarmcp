@@ -26,27 +26,48 @@ def main():
     parser.add_argument("--citation-port", type=int, default=19823, help="Port for citation HTML server (default: 19823)")
     args = parser.parse_args()
 
-    # Configure citations
+    from .storage import backend
+    print(f"Cache: {backend}", file=sys.stderr)
+
     from .citations import registry
     if args.no_citations:
         registry.enabled = False
+    elif args.http:
+        base_url = os.environ.get("EDGARMCP_BASE_URL")
+        if not base_url:
+            host = "localhost" if args.host == "0.0.0.0" else args.host
+            base_url = f"http://{host}:{args.port}"
+        registry.base_url_override = base_url
+        print(f"Citations: {base_url}/cite/...", file=sys.stderr)
     else:
         registry.port = args.citation_port
-
-    # Start citation HTML server if enabled
-    if registry.enabled:
         _start_citation_server(args.citation_port)
 
     if args.http:
-        if args.host == "0.0.0.0":
-            print("WARNING: Binding to 0.0.0.0 exposes MCP server publicly WITHOUT authentication.", file=sys.stderr)
-        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+        _run_http(args)
     else:
         mcp.run(transport="stdio")
 
 
+def _run_http(args):
+    import uvicorn
+    from .auth import ApiKeyAuthMiddleware, resolve_api_key
+
+    public = args.host == "0.0.0.0"
+    api_key = resolve_api_key(public=public)
+
+    if api_key:
+        print(f"Auth: Bearer {api_key}", file=sys.stderr)
+    else:
+        print("Auth: disabled (localhost only)", file=sys.stderr)
+
+    app = mcp.streamable_http_app()
+    app = ApiKeyAuthMiddleware(app, api_key=api_key)
+
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
 def _start_citation_server(port: int):
-    """Start the citation HTML server in a background thread."""
     import threading
     from .html_server import create_app
     from aiohttp import web

@@ -2,6 +2,11 @@
 
 from typing import Literal
 
+
+class EdgarError(Exception):
+    """Raised when an EDGAR operation fails (company not found, filing load error, etc.)."""
+    pass
+
 FormType = Literal[
     "10-K", "10-Q", "8-K", "20-F", "6-K",
     "DEF 14A", "S-1", "SC 13D", "SC 13G", "4",

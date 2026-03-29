@@ -9,9 +9,9 @@ from mcp.server.fastmcp import FastMCP
 from ..attachment_types import SKIP_EXHIBITS, infer_attachment_type, matches_attachment_type
 from ..cache import cache
 from ..citations import registry as citation_registry
-from ..company import CompanyInfo, resolve_company
-from ..filing_loader import load_filing
-from ..types import AttachmentType, FormType, DEFAULT_FORMS
+from ..company import CompanyInfo, resolve_company_cached
+from ..filing_loader import _get_accession, load_filing_cached
+from ..types import AttachmentType, EdgarError, FormType, DEFAULT_FORMS
 
 
 def register(mcp: FastMCP):
@@ -56,13 +56,11 @@ def register(mcp: FastMCP):
             end_date: YYYY-MM-DD (default: today)
             limit: Max documents returned (default: 20, max: 100)
         """
-        # Resolve company
-        result = resolve_company(company)
-        if isinstance(result, str):
-            return result
-        info: CompanyInfo = result
+        try:
+            info = await resolve_company_cached(company)
+        except EdgarError as e:
+            return str(e)
 
-        # Defaults
         if forms is None:
             forms = list(DEFAULT_FORMS)
         limit = min(limit, 100)
@@ -71,7 +69,6 @@ def register(mcp: FastMCP):
         if not end_date:
             end_date = date.today().isoformat()
 
-        # Fetch filings from edgartools
         try:
             date_range = f"{start_date}:{end_date}"
             filings = info.edgar_company.get_filings(form=forms, date=date_range)
@@ -81,14 +78,12 @@ def register(mcp: FastMCP):
         if not filings or len(filings) == 0:
             return f"No filings found for {info.symbol} ({', '.join(forms)}) in {start_date} to {end_date}."
 
-        # Store EntityFiling refs for read_document
         filing_list = []
         for f in filings:
-            accession = f.accession_number if hasattr(f, 'accession_number') else str(f.accession_no)
+            accession = _get_accession(f)
             cache.store_filing_ref(accession, f)
             filing_list.append((accession, f))
 
-        # Pre-fetch SGMLs in parallel (needed for attachment listing in all modes)
         prefetch = filing_list if attachment_types else filing_list[:limit]
         await load_sgmls_concurrently(
             [f for _, f in prefetch],
@@ -96,17 +91,15 @@ def register(mcp: FastMCP):
             return_exceptions=True,
         )
 
-        # Route to appropriate output mode
         if attachment_types:
             return _format_attachment_list(info, filing_list, attachment_types, limit)
         elif include_notes:
-            return _format_with_notes(info, filing_list, limit)
+            return await _format_with_notes(info, filing_list, limit)
         else:
             return _format_filing_list(info, filing_list, limit)
 
 
 def _format_filing_list(info: CompanyInfo, filing_list: list, limit: int) -> str:
-    """Default mode — filing list with attachment summary."""
     lines = [f"# {info.symbol} — {info.name} (CIK: {info.cik})\n"]
     lines.append("| # | Form | Date | Report Date | Description | Accession | Attachments |")
     lines.append("|---|------|------|-------------|-------------|-----------|-------------|")
@@ -115,23 +108,22 @@ def _format_filing_list(info: CompanyInfo, filing_list: list, limit: int) -> str
     for accession, f in filing_list:
         if count >= limit:
             break
-        form = getattr(f, 'form', '')
-        filing_date = str(getattr(f, 'filing_date', ''))
-        report_date = str(getattr(f, 'report_date', '') or '')
-        description = getattr(f, 'description', '') or form
 
-        # Get attachment summary
+        form = f.form or ""
+        filing_date = str(f.filing_date or "")
+        report_date = str(f.report_date or "")
+        description = f.description if hasattr(f, "description") and f.description else form
+
         att_parts = _get_attachment_summary(f)
         att_str = ", ".join(att_parts[:3])
         if len(att_parts) > 3:
             att_str += f" +{len(att_parts) - 3} more"
 
-        # Citation for filing row — links to the filing HTML
         cite = ""
         if citation_registry.enabled:
             cid = citation_registry.add(
                 accession_number=accession,
-                element_ids=["sec2md-p1"],  # first element as landing point
+                element_ids=["sec2md-p1"],
                 source_type="main",
                 form=form,
                 filing_date=filing_date,
@@ -154,7 +146,6 @@ def _format_filing_list(info: CompanyInfo, filing_list: list, limit: int) -> str
 def _format_attachment_list(
     info: CompanyInfo, filing_list: list, attachment_types: list[str], limit: int
 ) -> str:
-    """Flat attachment list filtered by type."""
     type_label = ", ".join(t.replace("_", " ").title() for t in attachment_types)
     lines = [f"# {info.symbol} — {info.name} — {type_label}\n"]
     lines.append("| # | Date | Form | Exhibit | Description | Accession |")
@@ -164,12 +155,12 @@ def _format_attachment_list(
     total = 0
     for accession, f in filing_list:
         try:
-            documents = f.attachments.documents if hasattr(f, 'attachments') else []
+            documents = f.attachments.documents
         except Exception:
             continue
 
-        filing_date = str(getattr(f, 'filing_date', ''))
-        form = getattr(f, 'form', '')
+        filing_date = str(f.filing_date or "")
+        form = f.form or ""
 
         for doc in documents:
             if not doc.document_type or not doc.document_type.startswith("EX-"):
@@ -188,7 +179,6 @@ def _format_attachment_list(
             if count >= limit:
                 continue
 
-            # Citation for attachment row
             cite = ""
             if citation_registry.enabled:
                 cid = citation_registry.add(
@@ -214,11 +204,10 @@ def _format_attachment_list(
     return "\n".join(lines)
 
 
-def _format_with_notes(info: CompanyInfo, filing_list: list, limit: int) -> str:
-    """Filings with notes listed (requires full parse)."""
+async def _format_with_notes(info: CompanyInfo, filing_list: list, limit: int) -> str:
     forms_str = set()
     for _, f in filing_list:
-        forms_str.add(getattr(f, 'form', ''))
+        forms_str.add(f.form or "")
 
     form_label = ", ".join(sorted(forms_str))
     lines = [f"# {info.symbol} — {info.name} — {form_label} Filings\n"]
@@ -229,13 +218,12 @@ def _format_with_notes(info: CompanyInfo, filing_list: list, limit: int) -> str:
             break
         count += 1
 
-        form = getattr(f, 'form', '')
-        filing_date = str(getattr(f, 'filing_date', ''))
-        report_date = str(getattr(f, 'report_date', '') or '')
+        form = f.form or ""
+        filing_date = str(f.filing_date or "")
+        report_date = str(f.report_date or "")
 
         lines.append(f"## {form} — {filing_date} ({report_date}) — {accession}\n")
 
-        # List attachments
         att_parts = _get_attachment_summary(f)
         if att_parts:
             lines.append("**Attachments:**")
@@ -243,10 +231,10 @@ def _format_with_notes(info: CompanyInfo, filing_list: list, limit: int) -> str:
                 lines.append(f"- {att}")
             lines.append("")
 
-        # Load and list notes (triggers full parse)
-        parsed = load_filing(accession, filing=f, company_info=info)
-        if isinstance(parsed, str):
-            lines.append(f"*Could not parse: {parsed}*\n")
+        try:
+            parsed = await load_filing_cached(accession, filing=f, company_info=info)
+        except EdgarError as e:
+            lines.append(f"*Could not parse: {e}*\n")
             continue
 
         if parsed.notes:
@@ -262,10 +250,9 @@ def _format_with_notes(info: CompanyInfo, filing_list: list, limit: int) -> str:
 
 
 def _get_attachment_summary(filing) -> list[str]:
-    """Get attachment type summaries for a filing."""
     parts = []
     try:
-        documents = filing.attachments.documents if hasattr(filing, 'attachments') else []
+        documents = filing.attachments.documents
     except Exception:
         return parts
 

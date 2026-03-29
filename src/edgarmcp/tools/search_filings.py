@@ -10,10 +10,10 @@ from sec2md import chunk_pages
 
 from ..cache import ParsedFiling, cache
 from ..citations import registry as citation_registry
-from ..company import CompanyInfo, resolve_company
+from ..company import CompanyInfo, resolve_company_cached
 from ..attachment_types import matches_attachment_type
-from ..filing_loader import load_filing, load_attachment_pages, get_section_pages
-from ..types import AttachmentType, FormType, SectionType, SEARCHABLE_ATTACHMENT_TYPES
+from ..filing_loader import _get_accession, load_filing_cached, load_attachment_pages, get_section_pages
+from ..types import AttachmentType, EdgarError, FormType, SectionType, SEARCHABLE_ATTACHMENT_TYPES
 
 
 def register(mcp: FastMCP):
@@ -70,21 +70,19 @@ def register(mcp: FastMCP):
         limit = min(limit, 100)
         top_k = min(top_k, 50)
 
-        # Resolve filings to search
-        if accession_numbers:
-            parsed_filings = await _load_by_accession(accession_numbers)
-        elif company and forms:
-            result = await _load_by_company(company, forms, start_date, end_date, limit)
-            if isinstance(result, str):
-                return result
-            parsed_filings = result
-        else:
-            return "Error: provide either (company + forms) or accession_numbers."
+        try:
+            if accession_numbers:
+                parsed_filings = await _load_by_accession(accession_numbers)
+            elif company and forms:
+                parsed_filings = await _load_by_company(company, forms, start_date, end_date, limit)
+            else:
+                return "Error: provide either (company + forms) or accession_numbers."
+        except EdgarError as e:
+            return str(e)
 
         if not parsed_filings:
             return "No filings could be loaded for searching."
 
-        # Build chunks with metadata
         all_chunks = []
         for parsed in parsed_filings:
             chunks = _build_chunks(parsed, attachment_types, sections)
@@ -93,7 +91,6 @@ def register(mcp: FastMCP):
         if not all_chunks:
             return "No searchable content found in the loaded filings."
 
-        # Filter by XBRL tags if specified
         if xbrl_tags:
             tag_set = set(xbrl_tags)
             filtered = []
@@ -107,20 +104,17 @@ def register(mcp: FastMCP):
                 return f"No chunks matched XBRL tags: {', '.join(xbrl_tags)}"
             all_chunks = filtered
 
-        # BM25 search
         tokenized_corpus = [c["text"].lower().split() for c in all_chunks]
         bm25 = BM25Okapi(tokenized_corpus)
         tokenized_query = query.lower().split()
         scores = bm25.get_scores(tokenized_query)
 
-        # Rank and select top_k
         ranked = sorted(
             zip(range(len(all_chunks)), scores),
             key=lambda x: x[1],
             reverse=True,
         )[:top_k]
 
-        # Format results
         scope = _describe_scope(company, forms, accession_numbers, attachment_types, sections)
         lines = [f"# Search: \"{query}\" in {scope}\n"]
         lines.append(f"Searched {len(parsed_filings)} filings, {len(all_chunks)} chunks.\n")
@@ -135,7 +129,6 @@ def register(mcp: FastMCP):
             if len(chunk["text"]) > 500:
                 text += "..."
 
-            # Register citation
             cid = citation_registry.add(
                 accession_number=chunk["accession"],
                 element_ids=chunk.get("element_ids", []),
@@ -151,7 +144,6 @@ def register(mcp: FastMCP):
             )
             cite_tag = citation_registry.format_tag(cid)
 
-            # Include XBRL tags if present
             tags = chunk.get("tags", [])
             tag_str = f"**XBRL:** {', '.join(tags[:5])}" if tags else ""
 
@@ -163,7 +155,6 @@ def register(mcp: FastMCP):
                 lines.append(tag_str)
             lines.append("\n---\n")
 
-        # Suggest follow-up
         if parsed_filings:
             best = all_chunks[ranked[0][0]] if ranked and ranked[0][1] > 0 else None
             if best:
@@ -184,12 +175,9 @@ def register(mcp: FastMCP):
 
 async def _load_by_company(
     company: str, forms: list[str], start_date: Optional[str], end_date: Optional[str], limit: int
-) -> list[ParsedFiling] | str:
-    """Resolve company and load filings with parallel SGML pre-fetch."""
-    result = resolve_company(company)
-    if isinstance(result, str):
-        return result
-    info: CompanyInfo = result
+) -> list[ParsedFiling]:
+    """Resolve company and load filings with parallel SGML pre-fetch. Raises EdgarError."""
+    info = await resolve_company_cached(company)
 
     if not start_date:
         start_date = (date.today() - timedelta(days=730)).isoformat()
@@ -200,57 +188,54 @@ async def _load_by_company(
         date_range = f"{start_date}:{end_date}"
         filings = info.edgar_company.get_filings(form=forms, date=date_range)
     except Exception as e:
-        return f"Failed to fetch filings: {e}"
+        raise EdgarError(f"Failed to fetch filings: {e}") from e
 
-    # Collect filings up to limit
     to_load = []
     for f in filings:
         if len(to_load) >= limit:
             break
-        accession = f.accession_number if hasattr(f, 'accession_number') else str(f.accession_no)
+        accession = _get_accession(f)
         cache.store_filing_ref(accession, f)
         to_load.append((accession, f))
 
-    # Pre-fetch all SGMLs in parallel
     await load_sgmls_concurrently(
         [f for _, f in to_load],
         max_in_flight=16,
         return_exceptions=True,
     )
 
-    # Now load/parse each filing (fast — SGMLs already cached)
     parsed_filings = []
     for accession, f in to_load:
-        parsed = load_filing(accession, filing=f, company_info=info)
-        if isinstance(parsed, ParsedFiling):
+        try:
+            parsed = await load_filing_cached(accession, filing=f, company_info=info)
             parsed_filings.append(parsed)
+        except EdgarError:
+            continue
 
     return parsed_filings
 
 
 async def _load_by_accession(accession_numbers: list[str]) -> list[ParsedFiling]:
-    """Load filings by accession number with parallel SGML pre-fetch."""
-    # Gather filing refs that are already cached
     to_prefetch = []
     for acc in accession_numbers:
         ref = cache.get_filing_ref(acc)
         if ref and not cache.get(acc):
             to_prefetch.append(ref)
 
-    # Pre-fetch SGMLs in parallel
     if to_prefetch:
         await load_sgmls_concurrently(to_prefetch, max_in_flight=16, return_exceptions=True)
 
     parsed_filings = []
     for acc in accession_numbers:
-        parsed = load_filing(acc)
-        if isinstance(parsed, ParsedFiling):
+        try:
+            parsed = await load_filing_cached(acc)
             parsed_filings.append(parsed)
+        except EdgarError:
+            continue
     return parsed_filings
 
 
 def _chunk_to_dict(c, source_type: str, parsed: ParsedFiling, **extra) -> dict:
-    """Convert a sec2md Chunk to our internal dict with metadata."""
     return {
         "text": c.content,
         "tags": list(c.tags) if c.tags else [],
@@ -272,7 +257,6 @@ def _build_chunks(
     attachment_types: Optional[list[str]],
     section_types: Optional[list[str]],
 ) -> list[dict]:
-    """Build searchable chunks from a parsed filing."""
     chunks = []
     defaults = {"exhibit_number": None, "attachment_type": None, "section": None, "note_name": None}
 
@@ -280,8 +264,9 @@ def _build_chunks(
         for att in parsed.attachments:
             if not matches_attachment_type(att.attachment_type, attachment_types):
                 continue
-            att_pages = load_attachment_pages(parsed, att.exhibit_number)
-            if isinstance(att_pages, str):
+            try:
+                att_pages = load_attachment_pages(parsed, att.exhibit_number)
+            except EdgarError:
                 continue
             for c in chunk_pages(att_pages, chunk_size=500, chunk_overlap=100):
                 chunks.append(_chunk_to_dict(
@@ -291,14 +276,14 @@ def _build_chunks(
                     section=None, note_name=None,
                 ))
     elif section_types:
-        # Section extraction only works reliably for 10-K/10-Q — use all pages for everything else
         if parsed.form.replace("/A", "") not in ("10-K", "10-Q", "8-K", "20-F"):
             for c in chunk_pages(parsed.pages, chunk_size=500, chunk_overlap=100):
                 chunks.append(_chunk_to_dict(c, "main", parsed, **defaults))
         else:
             for st in section_types:
-                sec_pages = get_section_pages(parsed, st)
-                if isinstance(sec_pages, str):
+                try:
+                    sec_pages = get_section_pages(parsed, st)
+                except EdgarError:
                     continue
                 for c in chunk_pages(sec_pages, chunk_size=500, chunk_overlap=100):
                     chunks.append(_chunk_to_dict(
@@ -307,19 +292,15 @@ def _build_chunks(
                         exhibit_number=None, attachment_type=None, note_name=None,
                     ))
     else:
-        # Main filing
         for c in chunk_pages(parsed.pages, chunk_size=500, chunk_overlap=100):
-            chunks.append(_chunk_to_dict(
-                c, "main", parsed,
-                **defaults,
-            ))
+            chunks.append(_chunk_to_dict(c, "main", parsed, **defaults))
 
-        # Searchable attachments
         for att in parsed.attachments:
             if att.attachment_type not in SEARCHABLE_ATTACHMENT_TYPES:
                 continue
-            att_pages = load_attachment_pages(parsed, att.exhibit_number)
-            if isinstance(att_pages, str):
+            try:
+                att_pages = load_attachment_pages(parsed, att.exhibit_number)
+            except EdgarError:
                 continue
             for c in chunk_pages(att_pages, chunk_size=500, chunk_overlap=100):
                 chunks.append(_chunk_to_dict(
@@ -329,7 +310,6 @@ def _build_chunks(
                     section=None, note_name=None,
                 ))
 
-        # Notes to financial statements
         for note in parsed.notes:
             note_pages = [p for p in parsed.pages if note.start_page <= p.number <= note.end_page]
             if not note_pages:
@@ -345,7 +325,6 @@ def _build_chunks(
 
 
 def _format_result_header(chunk: dict) -> str:
-    """Format a rich header for a search result."""
     company = chunk.get("company_name", "")
     symbol = chunk.get("company_symbol", "")
     form = chunk["form"]
@@ -354,7 +333,6 @@ def _format_result_header(chunk: dict) -> str:
     page = chunk.get("page")
     source_type = chunk["source_type"]
 
-    # Line 1: source label | Company (SYMBOL)
     company_str = f"{company} ({symbol})" if symbol and symbol != company else company
     if source_type == "attachment":
         att_type = (chunk.get("attachment_type") or "exhibit").replace("_", " ").title()
@@ -369,7 +347,6 @@ def _format_result_header(chunk: dict) -> str:
 
     line1 = f"{label} | {company_str}"
 
-    # Line 2: Form | Filed: date | Period Ending: date | Page N
     parts = [f"Form {form}", f"Filed: {filing_date}"]
     if report_date:
         parts.append(f"Period Ending: {report_date}")
@@ -381,7 +358,6 @@ def _format_result_header(chunk: dict) -> str:
 
 
 def _describe_scope(company, forms, accession_numbers, attachment_types, sections) -> str:
-    """Describe the search scope for the header."""
     parts = []
     if company:
         parts.append(company.upper())
