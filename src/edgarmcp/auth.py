@@ -86,7 +86,7 @@ def _handle_citation(path: str) -> Response:
     if not citation:
         return JSONResponse({"error": f"Citation {citation_id} not found"}, status_code=404)
 
-    fragment = ",".join(citation.element_ids[:5])
+    fragment = ",".join(citation.element_ids)
     if citation.source_type == "attachment" and citation.exhibit_number:
         filename = f"{citation.accession_number}_ex_{citation.exhibit_number}"
     else:

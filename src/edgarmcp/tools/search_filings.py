@@ -276,7 +276,7 @@ def _build_chunks(
                     section=None, note_name=None,
                 ))
     elif section_types:
-        if parsed.form.replace("/A", "") not in ("10-K", "10-Q", "8-K", "20-F"):
+        if parsed.form.replace("/A", "") not in ("10-K", "10-Q", "8-K"):
             for c in chunk_pages(parsed.pages, chunk_size=500, chunk_overlap=100):
                 chunks.append(_chunk_to_dict(c, "main", parsed, **defaults))
         else:
@@ -291,6 +291,9 @@ def _build_chunks(
                         section=st,
                         exhibit_number=None, attachment_type=None, note_name=None,
                     ))
+            if not chunks:
+                for c in chunk_pages(parsed.pages, chunk_size=500, chunk_overlap=100):
+                    chunks.append(_chunk_to_dict(c, "main", parsed, **defaults))
     else:
         for c in chunk_pages(parsed.pages, chunk_size=500, chunk_overlap=100):
             chunks.append(_chunk_to_dict(c, "main", parsed, **defaults))

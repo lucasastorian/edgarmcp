@@ -28,6 +28,24 @@ def _get_accession(filing) -> str:
         return str(filing.accession_no)
 
 
+def _resolve_filing_ref(accession_number: str):
+    """Resolve a live filing object for an accession number. Raises EdgarError on failure."""
+    ref = cache.get_filing_ref(accession_number)
+    if ref is not None:
+        return ref
+    try:
+        from edgar import find
+        filing = find(accession_number)
+        if filing is None:
+            raise EdgarError(f"Filing not found: {accession_number}")
+        cache.store_filing_ref(accession_number, filing)
+        return filing
+    except EdgarError:
+        raise
+    except Exception as e:
+        raise EdgarError(f"Failed to resolve filing {accession_number}: {e}") from e
+
+
 def load_filing(
     accession_number: str,
     filing=None,
@@ -248,7 +266,7 @@ def _deserialize_parsed(data: dict) -> ParsedFiling:
 def load_attachment_pages(parsed: ParsedFiling, exhibit_number: str) -> list:
     """Load and parse attachment HTML on demand. Raises EdgarError on failure."""
     if parsed.filing is None:
-        raise EdgarError(f"No filing reference available for {parsed.accession_number}")
+        parsed.filing = _resolve_filing_ref(parsed.accession_number)
 
     try:
         documents = parsed.filing.attachments.documents

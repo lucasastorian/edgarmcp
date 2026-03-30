@@ -189,13 +189,13 @@ def _get_filings_for_financials(
             filings.append((_get_accession(f), f))
             count += 1
     else:
-        num_10q = periods + 2
-        num_10k = (periods // 4) + 2
+        num_interim = periods + 2
+        num_annual = (periods // 4) + 2
 
-        raw_q = info.edgar_company.get_filings(form=["10-Q"])
+        raw_q = info.edgar_company.get_filings(form=["10-Q", "6-K"])
         count = 0
         for f in raw_q:
-            if count >= num_10q:
+            if count >= num_interim:
                 break
             filings.append((_get_accession(f), f))
             count += 1
@@ -203,7 +203,7 @@ def _get_filings_for_financials(
         raw_k = info.edgar_company.get_filings(form=["10-K", "20-F"])
         count = 0
         for f in raw_k:
-            if count >= num_10k:
+            if count >= num_annual:
                 break
             filings.append((_get_accession(f), f))
             count += 1

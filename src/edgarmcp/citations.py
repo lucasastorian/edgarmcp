@@ -57,7 +57,7 @@ class CitationRegistry:
         self._citations[self._counter] = Citation(
             id=self._counter,
             accession_number=accession_number,
-            element_ids=element_ids,
+            element_ids=element_ids[:self.MAX_ELEMENT_IDS],
             source_type=source_type,
             **kwargs,
         )
